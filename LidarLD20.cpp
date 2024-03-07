@@ -17,6 +17,8 @@ int startRangeAngle = -1;
 int endRangeAngle = -1;
 bool endRange = false;
 
+uint8_t processSerialLastByte = 0;
+
 static const uint8_t CrcTable[256] = {
     0x00, 0x4d, 0x9a, 0xd7, 0x79, 0x34, 0xe3, 0xae, 0xf2, 0xbf, 0x68, 0x25,
     0x8b, 0xc6, 0x11, 0x5c, 0xa9, 0xe4, 0x33, 0x7e, 0xd0, 0x9d, 0x4a, 0x07,
@@ -58,8 +60,6 @@ static enum {
   VER_LEN,
   DATA,
 } state = HEADER;
-static uint16_t count = 0;
-static uint8_t tmp[128] = {0};
 
 std::vector<uint8_t> fakePacket {
   0x54, 0x2C, 0x68, 0x08, 0xAB, 0x7E, 0xE0, 0x00, 0xE4, 0xDC, 0x00, 0xE2, 0xD9, 0x00, 0xE5, 0xD5, 0x00, 
@@ -70,15 +70,20 @@ std::vector<uint8_t> fakePacket {
 std::vector<LidarData> lidarReaded;
 
 
-//bool filterIntensity = false;
-//int filterIntensityValue = 200;
-
+uint8_t CalCRC8(const uint8_t *data, uint16_t data_len) {
+  uint8_t crc = 0;
+  while (data_len--) {
+    crc = CrcTable[(crc ^ *data) & 0xff];
+    data++;
+  }
+  return crc;
+}
 
 LidarData LidarLD20::processPacket(const uint8_t *data)
 {
   LidarData frame;
-  //packet[0] HEADER
-  //packet[1] VERLEN
+  //packet[0] BYTE_HEADER
+  //packet[1] BYTE_VERLEN
   uint16_t radarSpeed = data[3] << 8 | data[2];
   if(radarSpeed == 0) {
     Serial.println("speed 0");
@@ -93,22 +98,34 @@ LidarData LidarLD20::processPacket(const uint8_t *data)
   frame.startAngle = (startAngle / 100) % 360;
   frame.endAngle = (endAngle / 100) % 360;
   frame.timestamp = timestamp;
+
+  // Serial.print(frame.startAngle);
+  // Serial.print("------");
+  // Serial.print(frame.endAngle);
+  // Serial.println(" debug");
   
+  // frame.empty = true;
+  // return frame;
+
+  if(frame.endAngle<frame.startAngle) {
+    Serial.println(" invalid endangle");
+    frame.empty = true;
+    return frame;
+  }
+
   if(!isInRange && startRangeAngle>0) {
     if(frame.startAngle<startRangeAngle) {
-      Serial.print("range start ");
-      Serial.println(frame.startAngle);
       isInRange = true;
     } else {
       frame.empty = true;
       return frame;      
     }
   }
-
+  
   double diffRead = (endAngle / 100 - startAngle / 100  + 360) % 360;
   double maxRange = ((double)radarSpeed * POINTS_PER_PACK / 2300 * 1.5);
   if (diffRead > maxRange) {
-    Serial.println("Read angle too large");
+    Serial.println(" Read angle too large");
     frame.empty = true;
     return frame;
   }
@@ -116,6 +133,7 @@ LidarData LidarLD20::processPacket(const uint8_t *data)
   uint32_t diff = ((uint32_t)endAngle + 36000 - startAngle) % 36000;
   float step = diff / (POINTS_PER_PACK - 1) / 100.0;
   float start = startAngle / 100.0;
+   
   // Process lidar points
   for (int i = 0; i < POINTS_PER_PACK ; i = i+stepForPoint)
   {
@@ -139,73 +157,61 @@ LidarData LidarLD20::processPacket(const uint8_t *data)
       endRange = true;
     }
   }
+  // Serial.println(" parsed");
   return frame;  
 }
 
-uint8_t CalCRC8(const uint8_t *data, uint16_t data_len) {
-  uint8_t crc = 0;
-  while (data_len--) {
-    crc = CrcTable[(crc ^ *data) & 0xff];
-    data++;
-  }
-  return crc;
-}
+void LidarLD20::processByteSerial (int incomingByte) {
+  static uint16_t count = 0;
+  static uint8_t tmp[128] = {0};
 
-
-void LidarLD20::processByteSerial (uint8_t incomingByte) {
-    switch (state) {
-      case HEADER: {
-        //Serial.print(incomingByte,HEX);
-        if(incomingByte == BYTE_HEADER) {
-          //Serial.println(" 0x54 header");
-          tmp[count++] = incomingByte;
-          state=VER_LEN;
-        } else {
-          //Serial.println("w_h");
-          count = 0;
-        } 
-        return;
-      }
-      case VER_LEN: {
-        //Serial.print(incomingByte,HEX);
-        if(incomingByte == BYTE_VERLEN) {
-          //Serial.println(" 0x2C verlen");
-          tmp[count++] = incomingByte;
-          state = DATA;
-        } else {
-          //Serial.println("w_v");
-          count = 0;
-          state = VER_LEN;
-        }
-        return;
-      }
-      case DATA: {
+  if(processSerialLastByte == 0x54 && incomingByte == 0x2C && count==0) {
+      tmp[0] = BYTE_HEADER;
+      tmp[1] = BYTE_VERLEN;
+      // Serial.print(tmp[0],HEX);
+      // Serial.print("|");
+      // Serial.print(tmp[1],HEX);
+      // Serial.print("|");
+      count = 2;
+    } else {
+      if(count>=2) {
+        // Serial.print(incomingByte,HEX);
+        // Serial.print("|");
         tmp[count++] = incomingByte;
-        if (count == PACKET_SIZE)
+        if (count >= PACKET_SIZE)  //full packet received
         {
-          uint8_t crc = CalCRC8((uint8_t *)&tmp, count - 1);
-          if (crc != tmp[PACKET_SIZE - 1]) { 
-             Serial.println("CRC error");
-            state = HEADER;
-            count=0;
+          uint8_t crc = CalCRC8(tmp, PACKET_SIZE - 1);
+          if (crc != tmp[PACKET_SIZE - 1]) {
+            // Serial.print(" CRC error ");
+            // Serial.println(crc,HEX);
+            count = 0;
             return;
           }
-          //Serial.println(" Packet end start process package");
-          state = HEADER;
           LidarData r = processPacket(tmp);
           if(!r.empty) {
             lidarReaded.push_back(r);
+          } else {
+            Serial.println("empty packet");
           }
           count = 0;
         }
-        return;
+      } else {
+        // Serial.print("lost byte");
+        // Serial.println(incomingByte,HEX);
       }
     }
+    processSerialLastByte = incomingByte;
+    return;  
+  
 }
 
 void LidarLD20::getFromSerial () {
   if (Serial1.available()) {
-    const int bufferSize = 128;//64 // Dimensione del buffer per i byte in ingresso
+    //  int byte = Serial1.read();
+    //  processByteSerial(byte);
+    //  return;
+
+    const int bufferSize = 141; // Dimensione del buffer per i byte in ingresso
     byte incomingBytes[bufferSize]; // Dichiarazione dell'array per memorizzare i byte
     
     int bytesRead = Serial1.readBytes(incomingBytes, bufferSize);
@@ -218,6 +224,7 @@ void LidarLD20::getFromSerial () {
 
 std::vector<LidarData> LidarLD20::read(int numPack) {
   lidarReaded.clear();
+  processSerialLastByte = 0;
   while(lidarReaded.size()<numPack){
     // Serial.println(lidarReaded.size());
     getFromSerial();
@@ -225,13 +232,29 @@ std::vector<LidarData> LidarLD20::read(int numPack) {
   return lidarReaded;
 }
 
+std::vector<LidarData> LidarLD20::readMs(int millisec) {
+  lidarReaded.clear(); 
+  processSerialLastByte = 0;
+  unsigned long millisecond = millis();
+  int endMs = millisecond + millisec;//millisecond + seconds*1000;
+  while(millis() < endMs){
+    getFromSerial();
+    //delay(1);
+    //Serial.println(millis());
+  }
+  Serial.print("--------------------------------------------- ");
+  Serial.println(millis());
+  return lidarReaded;
+}
+
 std::vector<LidarData> LidarLD20::readRange(int startAngle,int endAngle) {
   lidarReaded.clear(); 
+  processSerialLastByte = 0;
   startRangeAngle = startAngle;
   endRangeAngle = endAngle;
-  Serial.println("start range command");
   while(!endRange){
     getFromSerial();
+    //delay(1);
   }
   startRangeAngle = -1;
   endRangeAngle = -1;

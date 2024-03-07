@@ -13,9 +13,10 @@ class LidarLD20 {
     //6 = 12/6 point;   12 = 12/12 point
     int stepForPoint=1;
     std::vector<LidarData> read(int numPack);
+    std::vector<LidarData> readMs(int millisec);
     std::vector<LidarData> readRange(int startAngle,int endangle);
   private:
-    void processByteSerial (uint8_t incomingByte);
+    void processByteSerial (int incomingByte);
     LidarData processPacket(const uint8_t *data);
     void getFromSerial ();
 };
