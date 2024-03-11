@@ -1,9 +1,9 @@
 #include <Arduino.h>
 #include <vector>
 
-#include "LidarLD20.h"
-#include "LidarData.h"
 #include "PointData.h"
+#include "LidarData.h"
+#include "LidarLD20.h"
 
 LidarLD20* lidar = new LidarLD20();
 

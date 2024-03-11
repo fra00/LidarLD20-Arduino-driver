@@ -1,6 +1,7 @@
 #ifndef LIDARLD20_H
 #define LIDARLD20_H
 #include <vector>
+#include <stdint.h>
 #include "LidarData.h"
 
 class LidarLD20 {
